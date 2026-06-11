@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>WC Predictor</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: var(--tg-theme-bg-color, #0f0f0f);
+      --bg2: var(--tg-theme-secondary-bg-color, #1a1a2e);
+      --text: var(--tg-theme-text-color, #ffffff);
+      --hint: var(--tg-theme-hint-color, #8a8a9a);
+      --accent: #00c851;
+      --accent2: #2979ff;
+      --gold: #ffc107;
+      --danger: #ff4444;
+      --card: rgba(255,255,255,0.06);
+      --border: rgba(255,255,255,0.10);
+      --radius: 14px;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
+
+    #root { min-height: 100vh; display: flex; flex-direction: column; }
+
+    .screen { flex: 1; display: flex; flex-direction: column; padding: 0 0 80px; }
+
+    /* Header */
+    .header { padding: 16px 16px 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
+    .header-logo { font-size: 22px; }
+    .header-title { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+    .header-sub { font-size: 12px; color: var(--hint); margin-top: 1px; }
+    .header-pot { margin-left: auto; text-align: right; }
+    .pot-amount { font-size: 18px; font-weight: 800; color: var(--gold); }
+    .pot-label { font-size: 11px; color: var(--hint); }
+
+    /* Tab Bar */
+    .tabbar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg); border-top: 1px solid var(--border); display: flex; padding: 8px 0 max(8px, env(safe-area-inset-bottom)); z-index: 100; }
+    .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0; cursor: pointer; opacity: 0.45; transition: opacity 0.15s; border: none; background: none; color: var(--text); font-size: 10px; font-weight: 500; letter-spacing: 0.2px; }
+    .tab.active { opacity: 1; color: var(--accent); }
+    .tab-icon { font-size: 22px; line-height: 1; }
+
+    /* Cards */
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin: 0 12px 10px; }
+    .card-sm { padding: 10px 14px; }
+
+    /* Match Card */
+    .match-card { margin: 0 12px 10px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .match-header { padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+    .match-stage { font-size: 10px; font-weight: 600; color: var(--hint); text-transform: uppercase; letter-spacing: 0.8px; }
+    .match-time { font-size: 11px; color: var(--hint); }
+    .match-time.live { color: #ff4757; font-weight: 700; }
+    .match-body { padding: 14px; }
+    .teams-row { display: flex; align-items: center; gap: 0; }
+    .team { flex: 1; text-align: center; }
+    .team-flag { font-size: 30px; line-height: 1; margin-bottom: 4px; }
+    .team-name { font-size: 13px; font-weight: 600; }
+    .vs-block { width: 80px; text-align: center; flex-shrink: 0; }
+    .vs-text { font-size: 11px; color: var(--hint); font-weight: 600; }
+    .score-display { font-size: 22px; font-weight: 800; letter-spacing: 2px; color: var(--accent); }
+
+    /* Score Input */
+    .score-inputs { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .score-input-group { display: flex; align-items: center; gap: 6px; }
+    .score-label { font-size: 11px; color: var(--hint); font-weight: 500; }
+    .score-stepper { display: flex; align-items: center; gap: 0; background: rgba(255,255,255,0.08); border-radius: 10px; overflow: hidden; }
+    .stepper-btn { width: 36px; height: 36px; border: none; background: none; color: var(--text); font-size: 20px; font-weight: 300; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s; }
+    .stepper-btn:active { background: rgba(255,255,255,0.1); }
+    .stepper-val { width: 32px; text-align: center; font-size: 18px; font-weight: 700; }
+    .vs-dash { font-size: 20px; font-weight: 300; color: var(--hint); }
+    .predict-btn { width: 100%; margin-top: 10px; padding: 11px; background: var(--accent); border: none; border-radius: 10px; color: #000; font-size: 14px; font-weight: 700; cursor: pointer; transition: opacity 0.15s; }
+    .predict-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    .predict-btn.saved { background: rgba(0,200,81,0.15); color: var(--accent); border: 1px solid rgba(0,200,81,0.3); }
+    .predict-btn.locked { background: rgba(255,255,255,0.06); color: var(--hint); }
+
+    /* Leaderboard */
+    .lb-row { display: flex; align-items: center; padding: 12px 16px; gap: 12px; border-bottom: 1px solid var(--border); }
+    .lb-row:last-child { border-bottom: none; }
+    .lb-rank { width: 26px; text-align: center; font-size: 13px; font-weight: 700; color: var(--hint); }
+    .lb-rank.gold { color: #ffd700; font-size: 16px; }
+    .lb-rank.silver { color: #c0c0c0; font-size: 16px; }
+    .lb-rank.bronze { color: #cd7f32; font-size: 16px; }
+    .lb-avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--accent2); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 700; flex-shrink: 0; }
+    .lb-name { flex: 1; font-size: 14px; font-weight: 600; }
+    .lb-meta { font-size: 11px; color: var(--hint); margin-top: 1px; }
+    .lb-points { text-align: right; font-size: 18px; font-weight: 800; color: var(--accent); }
+    .lb-pts-label { font-size: 10px; color: var(--hint); }
+    .unpaid-badge { font-size: 10px; background: rgba(255,68,68,0.15); color: var(--danger); border-radius: 6px; padding: 2px 6px; margin-left: 6px; }
+    .paid-badge { font-size: 10px; background: rgba(0,200,81,0.15); color: var(--accent); border-radius: 6px; padding: 2px 6px; }
+
+    /* Admin section */
+    .admin-card { border-color: rgba(255,193,7,0.3); background: rgba(255,193,7,0.05); }
+    .admin-title { font-size: 12px; font-weight: 700; color: var(--gold); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; }
+
+    /* Misc */
+    .section-label { font-size: 12px; font-weight: 700; color: var(--hint); text-transform: uppercase; letter-spacing: 0.8px; padding: 16px 16px 8px; }
+    .pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+    .pill-green { background: rgba(0,200,81,0.15); color: var(--accent); }
+    .pill-blue { background: rgba(41,121,255,0.15); color: var(--accent2); }
+    .pill-red { background: rgba(255,68,68,0.15); color: var(--danger); }
+    .empty { text-align: center; padding: 48px 24px; color: var(--hint); font-size: 15px; }
+    .empty-icon { font-size: 48px; margin-bottom: 12px; }
+
+    .toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); background: #1a1a2e; border: 1px solid var(--accent); color: var(--accent); padding: 10px 20px; border-radius: 24px; font-size: 13px; font-weight: 600; z-index: 999; opacity: 0; transition: opacity 0.2s; pointer-events: none; white-space: nowrap; }
+    .toast.show { opacity: 1; }
+
+    .loading { display: flex; align-items: center; justify-content: center; height: 200px; color: var(--hint); font-size: 14px; gap: 8px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+
+    .btn { padding: 10px 16px; border-radius: 10px; border: none; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+    .btn:active { opacity: 0.7; }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+    .btn-sm { padding: 7px 12px; font-size: 12px; border-radius: 8px; }
+
+    input[type=number] { background: rgba(255,255,255,0.08); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 15px; padding: 8px 10px; width: 70px; text-align: center; }
+    input[type=number]:focus { outline: none; border-color: var(--accent); }
+
+    .my-prediction-badge { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; background: rgba(0,200,81,0.08); border-radius: 8px; font-size: 12px; color: var(--accent); margin-top: 8px; }
+
+    .invite-box { background: rgba(41,121,255,0.1); border: 1px dashed rgba(41,121,255,0.3); border-radius: 10px; padding: 12px; margin: 0 12px 10px; text-align: center; cursor: pointer; }
+    .invite-code { font-size: 24px; font-weight: 800; letter-spacing: 4px; color: var(--accent2); }
+    .invite-hint { font-size: 11px; color: var(--hint); margin-top: 4px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ── Config ──────────────────────────────────────────
+const API_BASE = 'YOUR_BACKEND_URL'; // e.g. https://wc-predictor.railway.app
+
+// ── Helpers ──────────────────────────────────────────
+const tg = window.Telegram?.WebApp;
+
+function getInitData() {
+  return tg?.initData || '';
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(API_BASE + path, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-telegram-init-data': getInitData(),
+      ...(opts.headers || {})
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function formatKickoff(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const isTomorrow = new Date(now.getTime() + 86400000).toDateString() === d.toDateString();
+  const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+  if (isToday) return `Today ${time}`;
+  if (isTomorrow) return `Tomorrow ${time}`;
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + ` ${time}`;
+}
+
+function isLocked(kickoff) {
+  return new Date(kickoff) <= new Date();
+}
+
+function avatarColor(name) {
+  const colors = ['#2979ff','#00c851','#ff4757','#ffa502','#a55eea','#2ed573','#ff6b81','#1e90ff'];
+  let hash = 0;
+  for (let c of (name || '?')) hash = hash * 31 + c.charCodeAt(0);
+  return colors[Math.abs(hash) % colors.length];
+}
+
+// ── Toast ─────────────────────────────────────────────
+function Toast({ msg }) {
+  return <div className={`toast ${msg ? 'show' : ''}`}>{msg}</div>;
+}
+
+// ── Stepper Component ─────────────────────────────────
+function ScoreStepper({ value, onChange, disabled }) {
+  return (
+    <div className="score-stepper">
+      <button className="stepper-btn" onClick={() => !disabled && onChange(Math.max(0, value - 1))} disabled={disabled}>−</button>
+      <span className="stepper-val">{value}</span>
+      <button className="stepper-btn" onClick={() => !disabled && onChange(Math.min(20, value + 1))} disabled={disabled}>+</button>
+    </div>
+  );
+}
+
+// ── Match Card ────────────────────────────────────────
+function MatchCard({ match, prediction, onPredict, isAdmin, leagueId, onAdminScore }) {
+  const [home, setHome] = useState(prediction?.home_score ?? 1);
+  const [away, setAway] = useState(prediction?.away_score ?? 1);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(!!prediction);
+  const locked = isLocked(match.kickoff);
+  const finished = match.status === 'finished';
+
+  async function submit() {
+    setSaving(true);
+    try {
+      await onPredict(match.id, home, away);
+      setSaved(true);
+      tg?.HapticFeedback?.notificationOccurred('success');
+    } catch(e) {
+      tg?.HapticFeedback?.notificationOccurred('error');
+    }
+    setSaving(false);
+  }
+
+  return (
+    <div className="match-card">
+      <div className="match-header">
+        <span className="match-stage">{match.stage.toUpperCase()}</span>
+        <span className={`match-time ${match.status === 'live' ? 'live' : ''}`}>
+          {finished ? '✅ Final' : match.status === 'live' ? '🔴 LIVE' : formatKickoff(match.kickoff)}
+        </span>
+      </div>
+      <div className="match-body">
+        <div className="teams-row">
+          <div className="team">
+            <div className="team-flag">{match.home_flag}</div>
+            <div className="team-name">{match.home_team}</div>
+          </div>
+          <div className="vs-block">
+            {finished
+              ? <div className="score-display">{match.home_score}–{match.away_score}</div>
+              : <div className="vs-text">vs</div>
+            }
+          </div>
+          <div className="team">
+            <div className="team-flag">{match.away_flag}</div>
+            <div className="team-name">{match.away_team}</div>
+          </div>
+        </div>
+
+        {!finished && (
+          <>
+            <div className="score-inputs">
+              <div className="score-input-group">
+                <ScoreStepper value={home} onChange={v => { setHome(v); setSaved(false); }} disabled={locked} />
+              </div>
+              <span className="vs-dash">–</span>
+              <div className="score-input-group">
+                <ScoreStepper value={away} onChange={v => { setAway(v); setSaved(false); }} disabled={locked} />
+              </div>
+            </div>
+
+            {locked
+              ? <button className="predict-btn locked" disabled>🔒 Locked</button>
+              : <button
+                  className={`predict-btn ${saved ? 'saved' : ''}`}
+                  onClick={submit}
+                  disabled={saving}
+                >
+                  {saving ? '...' : saved ? `✅ Saved: ${home}–${away}` : 'Save Prediction'}
+                </button>
+            }
+          </>
+        )}
+
+        {prediction && (
+          <div className="my-prediction-badge">
+            🎯 Your pick: {prediction.home_score}–{prediction.away_score}
+            {prediction.points_earned > 0 && <span style={{color:'#ffc107'}}> · +{prediction.points_earned} pts</span>}
+          </div>
+        )}
+
+        {isAdmin && !finished && locked && (
+          <AdminScoreEntry match={match} leagueId={leagueId} onScore={onAdminScore} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Admin Score Entry ─────────────────────────────────
+function AdminScoreEntry({ match, leagueId, onScore }) {
+  const [h, setH] = useState(0);
+  const [a, setA] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  async function submit() {
+    setLoading(true);
+    try {
+      await api('/api/admin/score-match', {
+        method: 'POST',
+        body: { league_id: leagueId, match_id: match.id, home_score: h, away_score: a }
+      });
+      onScore();
+      tg?.HapticFeedback?.notificationOccurred('success');
+    } catch(e) {}
+    setLoading(false);
+  }
+
+  return (
+    <div style={{marginTop:10, padding:10, background:'rgba(255,193,7,0.08)', borderRadius:10, border:'1px solid rgba(255,193,7,0.2)'}}>
+      <div style={{fontSize:11, color:'#ffc107', fontWeight:700, marginBottom:8}}>⚡ ADMIN: Enter Result</div>
+      <div style={{display:'flex', alignItems:'center', gap:8}}>
+        <input type="number" min="0" max="20" value={h} onChange={e=>setH(+e.target.value)} style={{width:52}} />
+        <span style={{color:'var(--hint)'}}>–</span>
+        <input type="number" min="0" max="20" value={a} onChange={e=>setA(+e.target.value)} style={{width:52}} />
+        <button className="btn btn-primary btn-sm" onClick={submit} disabled={loading} style={{flex:1}}>
+          {loading ? '...' : 'Save & Score'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Predictions Tab ───────────────────────────────────
+function PredictionsTab({ data, onPredict, onAdminScore }) {
+  if (!data) return <div className="loading"><div className="spinner"/></div>;
+
+  const upcoming = data.matches.filter(m => m.status !== 'finished' && !isLocked(m.kickoff));
+  const locked = data.matches.filter(m => m.status !== 'finished' && isLocked(m.kickoff));
+  const finished = data.matches.filter(m => m.status === 'finished');
+
+  const renderMatches = (ms, label) => ms.length === 0 ? null : (
+    <>
+      <div className="section-label">{label}</div>
+      {ms.map(m => (
+        <MatchCard
+          key={m.id}
+          match={m}
+          prediction={data.myPredictions[m.id]}
+          onPredict={onPredict}
+          isAdmin={data.isAdmin}
+          leagueId={data.league.id}
+          onAdminScore={onAdminScore}
+        />
+      ))}
+    </>
+  );
+
+  return (
+    <div className="screen">
+      {!data.isMember && (
+        <div className="card" style={{margin:'12px', background:'rgba(255,68,68,0.1)', borderColor:'rgba(255,68,68,0.3)'}}>
+          <div style={{color:'var(--danger)', fontWeight:700, marginBottom:4}}>⚠️ Not a member</div>
+          <div style={{fontSize:13, color:'var(--hint)'}}>Ask the admin to add you to this league</div>
+        </div>
+      )}
+      {renderMatches(upcoming, '🎯 Predict Now')}
+      {renderMatches(locked, '🔒 Locked')}
+      {renderMatches(finished, '✅ Finished')}
+      {data.matches.length === 0 && (
+        <div className="empty">
+          <div className="empty-icon">📅</div>
+          No matches yet
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Leaderboard Tab ───────────────────────────────────
+function LeaderboardTab({ data, onMarkPaid }) {
+  if (!data) return <div className="loading"><div className="spinner"/></div>;
+
+  const rankEmoji = (i) => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : null;
+  const rankClass = (i) => i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
+
+  return (
+    <div className="screen">
+      {/* Pot info */}
+      <div className="card" style={{margin:'12px 12px 6px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <div>
+          <div style={{fontSize:12, color:'var(--hint)', marginBottom:4}}>💰 Total Pot</div>
+          <div style={{fontSize:26, fontWeight:900, color:'var(--gold)'}}>₹{data.league.pot.toLocaleString('en-IN')}</div>
+        </div>
+        <div style={{textAlign:'right'}}>
+          <div style={{fontSize:12, color:'var(--hint)', marginBottom:4}}>Players</div>
+          <div style={{fontSize:26, fontWeight:900}}>{data.members.length}</div>
+        </div>
+      </div>
+
+      {/* Invite code */}
+      <div className="invite-box" onClick={() => {
+        navigator.clipboard?.writeText(data.league.invite_code);
+        tg?.HapticFeedback?.impactOccurred('light');
+      }}>
+        <div style={{fontSize:11, color:'var(--hint)', marginBottom:6}}>Invite Code (tap to copy)</div>
+        <div className="invite-code">{data.league.invite_code}</div>
+        <div className="invite-hint">Share this with friends to join</div>
+      </div>
+
+      <div className="section-label">🏆 Standings</div>
+      <div className="card" style={{margin:'0 12px 10px', padding:0}}>
+        {data.members.map((m, i) => (
+          <div key={m.telegram_id} className="lb-row">
+            <div className={`lb-rank ${rankClass(i)}`}>
+              {rankEmoji(i) || (i + 1)}
+            </div>
+            <div className="lb-avatar" style={{background: avatarColor(m.display_name)}}>
+              {(m.display_name || '?')[0].toUpperCase()}
+            </div>
+            <div style={{flex:1}}>
+              <div style={{display:'flex', alignItems:'center', gap:6}}>
+                <span className="lb-name">{m.display_name}</span>
+                {m.paid
+                  ? <span className="paid-badge">paid</span>
+                  : <span className="unpaid-badge">unpaid</span>
+                }
+              </div>
+              {m.username && <div className="lb-meta">@{m.username}</div>}
+            </div>
+            <div>
+              <div className="lb-points">{m.points}</div>
+              <div className="lb-pts-label" style={{textAlign:'right'}}>pts</div>
+            </div>
+            {data.isAdmin && !m.paid && (
+              <button
+                className="btn btn-sm"
+                style={{marginLeft:8, background:'rgba(0,200,81,0.15)', color:'var(--accent)', border:'1px solid rgba(0,200,81,0.3)'}}
+                onClick={() => onMarkPaid(m.telegram_id)}
+              >
+                Mark paid
+              </button>
+            )}
+          </div>
+        ))}
+        {data.members.length === 0 && (
+          <div className="empty" style={{padding:'32px 16px'}}>No members yet</div>
+        )}
+      </div>
+
+      {/* Scoring rules */}
+      <div className="section-label">📖 How Points Work</div>
+      <div className="card card-sm" style={{margin:'0 12px 10px'}}>
+        <div style={{display:'flex', flexDirection:'column', gap:8, fontSize:13}}>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+            <span>⚽ Exact score</span>
+            <span style={{fontWeight:800, color:'#ffc107'}}>3 pts</span>
+          </div>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+            <span>✅ Correct result (W/D/L)</span>
+            <span style={{fontWeight:800, color:'var(--accent)'}}>1 pt</span>
+          </div>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+            <span>❌ Wrong result</span>
+            <span style={{fontWeight:800, color:'var(--hint)'}}>0 pts</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────
+function App() {
+  const [tab, setTab] = useState('predict');
+  const [data, setData] = useState(null);
+  const [toast, setToast] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const toastTimer = useRef(null);
+
+  // Get league ID from URL params
+  const leagueId = new URLSearchParams(window.location.search).get('league');
+
+  useEffect(() => {
+    tg?.ready();
+    tg?.expand();
+    tg?.setHeaderColor?.('#0f0f0f');
+
+    // Check for tab in URL
+    const urlTab = new URLSearchParams(window.location.search).get('tab');
+    if (urlTab) setTab(urlTab);
+  }, []);
+
+  const showToast = useCallback((msg) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(''), 2500);
+  }, []);
+
+  const loadData = useCallback(async () => {
+    if (!leagueId) { setLoading(false); return; }
+    try {
+      const d = await api(`/api/league/${leagueId}`);
+      setData(d);
+    } catch(e) {
+      setError('Failed to load league');
+    }
+    setLoading(false);
+  }, [leagueId]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  async function handlePredict(matchId, home, away) {
+    await api('/api/predict', {
+      method: 'POST',
+      body: { league_id: leagueId, match_id: matchId, home_score: home, away_score: away }
+    });
+    // Update local state
+    setData(d => ({
+      ...d,
+      myPredictions: { ...d.myPredictions, [matchId]: { home_score: home, away_score: away } }
+    }));
+    showToast('✅ Prediction saved!');
+  }
+
+  async function handleMarkPaid(memberId) {
+    await api('/api/admin/mark-paid', {
+      method: 'POST',
+      body: { league_id: leagueId, member_telegram_id: memberId }
+    });
+    showToast('✅ Marked as paid');
+    loadData();
+  }
+
+  if (!leagueId) {
+    return (
+      <div style={{padding: 24, textAlign: 'center'}}>
+        <div style={{fontSize: 48, marginBottom: 16}}>🏆</div>
+        <div style={{fontSize: 20, fontWeight: 800, marginBottom: 8}}>WC Predictor</div>
+        <div style={{fontSize: 14, color: 'var(--hint)'}}>Open this app from your Telegram bot to view your league</div>
+      </div>
+    );
+  }
+
+  if (loading) return <div className="loading"><div className="spinner"/> Loading league...</div>;
+  if (error) return <div className="empty"><div className="empty-icon">❌</div>{error}</div>;
+
+  return (
+    <>
+      <Toast msg={toast} />
+
+      {/* Header */}
+      <div className="header">
+        <span className="header-logo">🏆</span>
+        <div>
+          <div className="header-title">{data?.league.name || 'League'}</div>
+          <div className="header-sub">{data?.members.length} players</div>
+        </div>
+        {data && (
+          <div className="header-pot">
+            <div className="pot-amount">₹{data.league.pot.toLocaleString('en-IN')}</div>
+            <div className="pot-label">Total pot</div>
+          </div>
+        )}
+      </div>
+
+      {/* Tab Content */}
+      {tab === 'predict' && (
+        <PredictionsTab data={data} onPredict={handlePredict} onAdminScore={loadData} />
+      )}
+      {tab === 'leaderboard' && (
+        <LeaderboardTab data={data} onMarkPaid={handleMarkPaid} />
+      )}
+
+      {/* Tab Bar */}
+      <nav className="tabbar">
+        <button className={`tab ${tab === 'predict' ? 'active' : ''}`} onClick={() => setTab('predict')}>
+          <span className="tab-icon">🎯</span>
+          Predict
+        </button>
+        <button className={`tab ${tab === 'leaderboard' ? 'active' : ''}`} onClick={() => setTab('leaderboard')}>
+          <span className="tab-icon">🏆</span>
+          Standings
+        </button>
+      </nav>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
