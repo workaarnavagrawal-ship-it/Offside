@@ -147,14 +147,7 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    // Add admin as first member (auto-paid)
-    await supabase.from('league_members').insert({
-      league_id: league.id,
-      telegram_id: userId,
-      username: msg.from.username,
-      display_name: msg.from.first_name,
-      paid: true
-    });
+    // Admin is NOT added as a member — they run the league without being in the pot
 
     const inviteLink = `https://t.me/${(await bot.getMe()).username}?start=${league.invite_code}`;
 
@@ -346,6 +339,29 @@ app.post('/api/predict', requireMiniAppAuth, async (req, res) => {
   res.json({ ok: true, prediction: data });
 });
 
+// POST /api/unpredict — remove a prediction (only before kickoff)
+app.post('/api/unpredict', requireMiniAppAuth, async (req, res) => {
+  const { league_id, match_id } = req.body;
+  const userId = req.tgUser.id;
+
+  // Can't unsave once the match has started
+  const { data: match } = await supabase.from('matches').select().eq('id', match_id).single();
+  if (!match) return res.status(404).json({ error: 'Match not found' });
+  if (new Date(match.kickoff) <= new Date()) {
+    return res.status(400).json({ error: 'Match has already started' });
+  }
+
+  const { error } = await supabase
+    .from('predictions')
+    .delete()
+    .eq('league_id', league_id)
+    .eq('match_id', match_id)
+    .eq('telegram_id', userId);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
 // POST /api/admin/mark-paid — admin marks a member as paid
 app.post('/api/admin/mark-paid', requireMiniAppAuth, async (req, res) => {
   const { league_id, member_telegram_id } = req.body;
@@ -362,10 +378,16 @@ app.post('/api/admin/mark-paid', requireMiniAppAuth, async (req, res) => {
     .eq('league_id', league_id)
     .eq('telegram_id', member_telegram_id);
 
-  // Update pot
+  // Recount from paid members to avoid race conditions
+  const { count: paidCount } = await supabase
+    .from('league_members')
+    .select('*', { count: 'exact', head: true })
+    .eq('league_id', league_id)
+    .eq('paid', true);
+
   await supabase
     .from('leagues')
-    .update({ pot: league.pot + league.entry_fee })
+    .update({ pot: (paidCount || 0) * league.entry_fee })
     .eq('id', league_id);
 
   res.json({ ok: true });
