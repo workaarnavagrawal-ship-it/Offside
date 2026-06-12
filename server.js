@@ -23,6 +23,10 @@ const PORT = process.env.PORT || 3000;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const bot = new TelegramBot(BOT_TOKEN);
 
+// ── In-memory conversation state ────────────────────
+// Tracks admins mid-flow: { [userId]: { step, leagueName } }
+const pendingCreation = {};
+
 // ── Telegram Mini App auth validation ───────────────
 function validateTelegramWebAppData(initData) {
   const params = new URLSearchParams(initData);
@@ -102,12 +106,31 @@ app.post('/webhook', async (req, res) => {
     }
   }
 
-  // /create — create a new league
+  // /create — step 1: ask for league name, then fee
   else if (text.startsWith('/create')) {
     const parts = text.split(' ');
     const leagueName = parts.slice(1).join(' ') || `${msg.from.first_name}'s League`;
-    const feeMatch = leagueName.match(/(\d+)/);
-    const fee = feeMatch ? parseInt(feeMatch[1]) : 200;
+
+    // Store pending state and ask for fee
+    pendingCreation[userId] = { step: 'awaiting_fee', leagueName };
+
+    await bot.sendMessage(chatId,
+      `🏆 League name: *${leagueName}*\n\n💰 What's the entry fee (in ₹)? Reply with just the number e.g. *200*`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  // Fee reply — step 2: admin sends a number while pendingCreation is set
+  else if (pendingCreation[userId]?.step === 'awaiting_fee') {
+    const fee = parseInt(text.trim());
+
+    if (isNaN(fee) || fee <= 0) {
+      await bot.sendMessage(chatId, '❌ Please send a valid amount e.g. *200*', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    const { leagueName } = pendingCreation[userId];
+    delete pendingCreation[userId]; // clear state
 
     const { data: league, error } = await supabase
       .from('leagues')
@@ -124,19 +147,19 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    // Add admin as first member
+    // Add admin as first member (auto-paid)
     await supabase.from('league_members').insert({
       league_id: league.id,
       telegram_id: userId,
       username: msg.from.username,
       display_name: msg.from.first_name,
-      paid: true // Admin is auto-marked paid
+      paid: true
     });
 
     const inviteLink = `https://t.me/${(await bot.getMe()).username}?start=${league.invite_code}`;
 
     await bot.sendMessage(chatId,
-      `✅ *League created!*\n\n🏆 ${league.name}\n💰 Entry fee: ₹${league.entry_fee}\n🔑 Code: \`${league.invite_code}\`\n\nShare this link with friends:`,
+      `✅ *League created!*\n\n🏆 ${league.name}\n💰 Entry fee: ₹${fee}\n🔑 Code: \`${league.invite_code}\`\n\nShare this link with friends:`,
       { parse_mode: 'Markdown' }
     );
 
