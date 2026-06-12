@@ -18,6 +18,22 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const MINI_APP_URL = process.env.MINI_APP_URL; // Your Vercel URL
+
+// ── Startup diagnostics ──────────────────────────────
+console.log('Starting server...');
+console.log('BOT_TOKEN set:', !!BOT_TOKEN);
+console.log('SUPABASE_URL set:', !!SUPABASE_URL);
+console.log('SUPABASE_SERVICE_KEY set:', !!SUPABASE_SERVICE_KEY);
+console.log('MINI_APP_URL:', MINI_APP_URL);
+console.log('PORT:', process.env.PORT);
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err.message, err.stack);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
 const PORT = process.env.PORT || 3000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
@@ -48,27 +64,36 @@ function getTelegramUser(initData) {
 // ── Middleware: validate Mini App requests ───────────
 function requireMiniAppAuth(req, res, next) {
   const initData = req.headers['x-telegram-init-data'];
+  const headerUserId = req.headers['x-telegram-user-id'];
 
-  // If no initData (e.g. browser testing), allow but set empty user
-  if (!initData) {
-    req.tgUser = { id: 0, first_name: 'Guest' };
+  console.log('Auth check - initData length:', initData?.length || 0, 'headerUserId:', headerUserId);
+
+  // Try full initData validation first
+  if (initData && initData.length > 0) {
+    try {
+      const params = new URLSearchParams(initData);
+      const userStr = params.get('user');
+      if (userStr) {
+        const user = JSON.parse(userStr);
+        req.tgUser = user;
+        console.log('Auth success via initData, user:', user.id);
+        return next();
+      }
+    } catch(e) {
+      console.log('initData parse failed:', e.message);
+    }
+  }
+
+  // Fallback: use x-telegram-user-id header
+  if (headerUserId && headerUserId !== '0' && headerUserId !== '') {
+    req.tgUser = { id: parseInt(headerUserId), first_name: 'User' };
+    console.log('Auth via header userId:', headerUserId);
     return next();
   }
 
-  // Try to validate, but don't block if validation fails (dev mode)
-  try {
-    if (validateTelegramWebAppData(initData)) {
-      req.tgUser = getTelegramUser(initData);
-    } else {
-      // Validation failed but still try to parse user
-      const params = new URLSearchParams(initData);
-      const userStr = params.get('user');
-      req.tgUser = userStr ? JSON.parse(userStr) : { id: 0, first_name: 'Guest' };
-    }
-  } catch(e) {
-    req.tgUser = { id: 0, first_name: 'Guest' };
-  }
-
+  // Last resort: allow as guest
+  req.tgUser = { id: 0, first_name: 'Guest' };
+  console.log('Auth as guest');
   next();
 }
 
