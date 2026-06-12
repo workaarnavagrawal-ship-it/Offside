@@ -18,22 +18,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const MINI_APP_URL = process.env.MINI_APP_URL; // Your Vercel URL
-
-// ── Startup diagnostics ──────────────────────────────
-console.log('Starting server...');
-console.log('BOT_TOKEN set:', !!BOT_TOKEN);
-console.log('SUPABASE_URL set:', !!SUPABASE_URL);
-console.log('SUPABASE_SERVICE_KEY set:', !!SUPABASE_SERVICE_KEY);
-console.log('MINI_APP_URL:', MINI_APP_URL);
-console.log('PORT:', process.env.PORT);
-
-process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err.message, err.stack);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('UNHANDLED REJECTION:', reason);
-});
 const PORT = process.env.PORT || 3000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
@@ -64,36 +48,13 @@ function getTelegramUser(initData) {
 // ── Middleware: validate Mini App requests ───────────
 function requireMiniAppAuth(req, res, next) {
   const initData = req.headers['x-telegram-init-data'];
-  const headerUserId = req.headers['x-telegram-user-id'];
+  if (!initData) return res.status(401).json({ error: 'No auth' });
 
-  console.log('Auth check - initData length:', initData?.length || 0, 'headerUserId:', headerUserId);
-
-  // Try full initData validation first
-  if (initData && initData.length > 0) {
-    try {
-      const params = new URLSearchParams(initData);
-      const userStr = params.get('user');
-      if (userStr) {
-        const user = JSON.parse(userStr);
-        req.tgUser = user;
-        console.log('Auth success via initData, user:', user.id);
-        return next();
-      }
-    } catch(e) {
-      console.log('initData parse failed:', e.message);
-    }
+  if (!validateTelegramWebAppData(initData)) {
+    return res.status(401).json({ error: 'Invalid Telegram auth' });
   }
 
-  // Fallback: use x-telegram-user-id header
-  if (headerUserId && headerUserId !== '0' && headerUserId !== '') {
-    req.tgUser = { id: parseInt(headerUserId), first_name: 'User' };
-    console.log('Auth via header userId:', headerUserId);
-    return next();
-  }
-
-  // Last resort: allow as guest
-  req.tgUser = { id: 0, first_name: 'Guest' };
-  console.log('Auth as guest');
+  req.tgUser = getTelegramUser(initData);
   next();
 }
 
@@ -103,8 +64,7 @@ function requireMiniAppAuth(req, res, next) {
 
 // Set webhook (call once after deploy)
 app.get('/set-webhook', async (req, res) => {
-  const railwayUrl = `https://${req.headers.host}`;
-  const webhookUrl = `${railwayUrl}/webhook`;
+  const webhookUrl = `${MINI_APP_URL}/webhook`;
   await bot.setWebHook(webhookUrl);
   res.json({ ok: true, webhook: webhookUrl });
 });
@@ -288,11 +248,9 @@ async function handleJoinByCode(chatId, userId, from, code) {
 // GET /api/league/:id — full league data
 app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
   const { id } = req.params;
-  const userId = req.tgUser?.id || 0;
+  const userId = req.tgUser.id;
 
-  console.log('GET /api/league/:id', { id, userId, tgUser: req.tgUser });
-
-  const [{ data: league, error: leagueErr }, { data: members, error: membersErr }, { data: matches, error: matchesErr }] = await Promise.all([
+  const [{ data: league }, { data: members }, { data: matches }] = await Promise.all([
     supabase.from('leagues').select().eq('id', id).single(),
     supabase.from('league_members')
       .select('telegram_id, display_name, username, points, paid')
@@ -300,13 +258,12 @@ app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
       .order('points', { ascending: false }),
     supabase.from('matches')
       .select()
-      .gte('kickoff', new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()) // recent + upcoming
+      .gte('kickoff', (() => { const d = new Date(); d.setUTCHours(0,0,0,0); return d.toISOString(); })())
+      .lte('kickoff', (() => { const d = new Date(); d.setUTCHours(23,59,59,999); return d.toISOString(); })())
       .order('kickoff', { ascending: true })
-      .limit(20)
   ]);
 
-  console.log('League query result:', { league, leagueErr, membersErr, matchesErr });
-  if (!league) return res.status(404).json({ error: 'League not found', detail: leagueErr });
+  if (!league) return res.status(404).json({ error: 'League not found' });
 
   // Get this user's predictions
   const { data: myPredictions } = await supabase
