@@ -258,8 +258,18 @@ app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
       .order('points', { ascending: false }),
     supabase.from('matches')
       .select()
-      .gte('kickoff', (() => { const d = new Date(); d.setUTCHours(0,0,0,0); return d.toISOString(); })())
-      .lte('kickoff', (() => { const d = new Date(); d.setUTCHours(23,59,59,999); return d.toISOString(); })())
+      .gte('kickoff', (() => {
+        // IST = UTC+5:30. Find start of today in IST, expressed as UTC.
+        const IST = 5.5 * 60 * 60 * 1000;
+        const now = new Date();
+        return new Date(Math.floor((now.getTime() + IST) / 86400000) * 86400000 - IST).toISOString();
+      })())
+      .lte('kickoff', (() => {
+        const IST = 5.5 * 60 * 60 * 1000;
+        const now = new Date();
+        const start = new Date(Math.floor((now.getTime() + IST) / 86400000) * 86400000 - IST);
+        return new Date(start.getTime() + 86400000 - 1).toISOString();
+      })())
       .order('kickoff', { ascending: true })
   ]);
 
