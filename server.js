@@ -64,7 +64,8 @@ function requireMiniAppAuth(req, res, next) {
 
 // Set webhook (call once after deploy)
 app.get('/set-webhook', async (req, res) => {
-  const webhookUrl = `${MINI_APP_URL}/webhook`;
+  const railwayUrl = `https://${req.headers.host}`;
+  const webhookUrl = `${railwayUrl}/webhook`;
   await bot.setWebHook(webhookUrl);
   res.json({ ok: true, webhook: webhookUrl });
 });
