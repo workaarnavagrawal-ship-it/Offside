@@ -263,9 +263,11 @@ async function handleJoinByCode(chatId, userId, from, code) {
 // GET /api/league/:id — full league data
 app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
   const { id } = req.params;
-  const userId = req.tgUser.id;
+  const userId = req.tgUser?.id || 0;
 
-  const [{ data: league }, { data: members }, { data: matches }] = await Promise.all([
+  console.log('GET /api/league/:id', { id, userId, tgUser: req.tgUser });
+
+  const [{ data: league, error: leagueErr }, { data: members, error: membersErr }, { data: matches, error: matchesErr }] = await Promise.all([
     supabase.from('leagues').select().eq('id', id).single(),
     supabase.from('league_members')
       .select('telegram_id, display_name, username, points, paid')
@@ -278,7 +280,8 @@ app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
       .limit(20)
   ]);
 
-  if (!league) return res.status(404).json({ error: 'League not found' });
+  console.log('League query result:', { league, leagueErr, membersErr, matchesErr });
+  if (!league) return res.status(404).json({ error: 'League not found', detail: leagueErr });
 
   // Get this user's predictions
   const { data: myPredictions } = await supabase
