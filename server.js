@@ -9,6 +9,7 @@ const { createClient } = require('@supabase/supabase-js');
 const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
 const cron = require('node-cron');
+const ws = require('ws');
 const { seedSquads, fetchFixtureResult, linkFixtures } = require('./api-football');
 
 const app = express();
@@ -22,7 +23,13 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const MINI_APP_URL = process.env.MINI_APP_URL; // Your Vercel URL
 const PORT = process.env.PORT || 3000;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+// Provide `ws` as the WebSocket transport so @supabase/realtime-js can
+// construct on Node < 22 (which lacks native WebSocket). We don't use
+// realtime, but the client builds it at createClient() time regardless.
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+  realtime: { transport: ws },
+  auth: { persistSession: false, autoRefreshToken: false }
+});
 const bot = new TelegramBot(BOT_TOKEN);
 
 // ── In-memory conversation state ────────────────────

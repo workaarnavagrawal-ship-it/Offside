@@ -1,19 +1,19 @@
 {
-  "name": "wc-predictor",
+  "name": "wc-predictor-backend",
   "version": "1.0.0",
-  "description": "Offside WC Predictor — Telegram Mini App backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.0",
+    "@supabase/supabase-js": "^2.45.0",
     "cors": "^2.8.5",
-    "express": "^4.18.2",
+    "express": "^4.21.0",
     "node-cron": "^3.0.3",
-    "node-telegram-bot-api": "^0.64.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
