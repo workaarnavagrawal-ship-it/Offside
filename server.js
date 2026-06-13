@@ -307,7 +307,7 @@ app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
   // Get this user's scorer predictions (grouped by match)
   const { data: myScorers } = await supabase
     .from('scorer_predictions')
-    .select('match_id, player_name, points_earned')
+    .select('match_id, player_id, team, points_earned, players(name)')
     .eq('league_id', id)
     .eq('telegram_id', userId);
 
@@ -391,13 +391,20 @@ app.post('/api/unpredict', requireMiniAppAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/predict-scorer — type a scorer name (max 2 per user per match)
-app.post('/api/predict-scorer', requireMiniAppAuth, async (req, res) => {
-  const { league_id, match_id, player_name } = req.body;
-  const userId = req.tgUser.id;
+// GET /api/players/:team — dropdown list for a team
+app.get('/api/players/:team', requireMiniAppAuth, async (req, res) => {
+  const { data } = await supabase
+    .from('players')
+    .select('id, name')
+    .eq('team', req.params.team)
+    .order('name', { ascending: true });
+  res.json({ players: data || [] });
+});
 
-  const name = (player_name || '').trim();
-  if (name.length < 2) return res.status(400).json({ error: 'Enter a player name' });
+// POST /api/predict-scorer — pick a scorer (max 2 PER TEAM per match)
+app.post('/api/predict-scorer', requireMiniAppAuth, async (req, res) => {
+  const { league_id, match_id, player_id } = req.body;
+  const userId = req.tgUser.id;
 
   // match must not have started
   const { data: match } = await supabase.from('matches').select().eq('id', match_id).single();
@@ -412,22 +419,29 @@ app.post('/api/predict-scorer', requireMiniAppAuth, async (req, res) => {
     .eq('league_id', league_id).eq('telegram_id', userId).single();
   if (!member) return res.status(403).json({ error: 'Not a league member' });
 
-  // enforce max 2 scorer picks per match
+  // resolve the player + which team they belong to
+  const { data: player } = await supabase
+    .from('players').select('id, name, team').eq('id', player_id).single();
+  if (!player) return res.status(404).json({ error: 'Player not found' });
+
+  // player's team must be one of the two playing
+  if (player.team !== match.home_team && player.team !== match.away_team) {
+    return res.status(400).json({ error: 'Player is not in this match' });
+  }
+
+  // enforce max 2 picks for THIS team
   const { count } = await supabase
     .from('scorer_predictions')
     .select('*', { count: 'exact', head: true })
-    .eq('league_id', league_id).eq('telegram_id', userId).eq('match_id', match_id);
+    .eq('league_id', league_id).eq('telegram_id', userId)
+    .eq('match_id', match_id).eq('team', player.team);
   if ((count || 0) >= 2) {
-    return res.status(400).json({ error: 'Max 2 scorer picks per match' });
+    return res.status(400).json({ error: `Max 2 scorers for ${player.team}` });
   }
 
   const { data, error } = await supabase
     .from('scorer_predictions')
-    .insert({
-      league_id, match_id, telegram_id: userId,
-      player_name: name,
-      player_name_norm: normName(name)
-    })
+    .insert({ league_id, match_id, telegram_id: userId, player_id, team: player.team })
     .select().single();
 
   if (error) {
@@ -439,7 +453,7 @@ app.post('/api/predict-scorer', requireMiniAppAuth, async (req, res) => {
 
 // POST /api/unpredict-scorer — remove a scorer pick (before kickoff)
 app.post('/api/unpredict-scorer', requireMiniAppAuth, async (req, res) => {
-  const { league_id, match_id, player_name } = req.body;
+  const { league_id, match_id, player_id } = req.body;
   const userId = req.tgUser.id;
 
   const { data: match } = await supabase.from('matches').select().eq('id', match_id).single();
@@ -451,7 +465,7 @@ app.post('/api/unpredict-scorer', requireMiniAppAuth, async (req, res) => {
   const { error } = await supabase
     .from('scorer_predictions').delete()
     .eq('league_id', league_id).eq('match_id', match_id)
-    .eq('telegram_id', userId).eq('player_name_norm', normName(player_name));
+    .eq('telegram_id', userId).eq('player_id', player_id);
 
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
