@@ -8,6 +8,8 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
+const cron = require('node-cron');
+const { seedSquads, fetchFixtureResult, linkFixtures } = require('./api-football');
 
 const app = express();
 app.use(express.json());
@@ -289,11 +291,25 @@ app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
   const predMap = {};
   (myPredictions || []).forEach(p => { predMap[p.match_id] = p; });
 
+  // Get this user's scorer predictions (grouped by match)
+  const { data: myScorers } = await supabase
+    .from('scorer_predictions')
+    .select('match_id, player_id, points_earned, players(name, position, points_value)')
+    .eq('league_id', id)
+    .eq('telegram_id', userId);
+
+  const scorerMap = {};
+  (myScorers || []).forEach(s => {
+    if (!scorerMap[s.match_id]) scorerMap[s.match_id] = [];
+    scorerMap[s.match_id].push(s);
+  });
+
   res.json({
     league,
     members: members || [],
     matches: matches || [],
     myPredictions: predMap,
+    myScorers: scorerMap,
     isAdmin: league.admin_telegram_id == userId,
     isMember: (members || []).some(m => m.telegram_id == userId),
     myPoints: (members || []).find(m => m.telegram_id == userId)?.points || 0
@@ -357,6 +373,72 @@ app.post('/api/unpredict', requireMiniAppAuth, async (req, res) => {
     .eq('league_id', league_id)
     .eq('match_id', match_id)
     .eq('telegram_id', userId);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// GET /api/players/:team — list players for a national team (for the picker)
+app.get('/api/players/:team', requireMiniAppAuth, async (req, res) => {
+  const { data } = await supabase
+    .from('players')
+    .select('id, name, position, points_value, photo')
+    .eq('team', req.params.team)
+    .order('position', { ascending: true });
+  res.json({ players: data || [] });
+});
+
+// POST /api/predict-scorer — pick a scorer (max 2 per user per match)
+app.post('/api/predict-scorer', requireMiniAppAuth, async (req, res) => {
+  const { league_id, match_id, player_id } = req.body;
+  const userId = req.tgUser.id;
+
+  // match must not have started
+  const { data: match } = await supabase.from('matches').select().eq('id', match_id).single();
+  if (!match) return res.status(404).json({ error: 'Match not found' });
+  if (new Date(match.kickoff) <= new Date()) {
+    return res.status(400).json({ error: 'Match has already started' });
+  }
+
+  // must be a league member
+  const { data: member } = await supabase
+    .from('league_members').select()
+    .eq('league_id', league_id).eq('telegram_id', userId).single();
+  if (!member) return res.status(403).json({ error: 'Not a league member' });
+
+  // enforce max 2 scorer picks per match
+  const { count } = await supabase
+    .from('scorer_predictions')
+    .select('*', { count: 'exact', head: true })
+    .eq('league_id', league_id).eq('telegram_id', userId).eq('match_id', match_id);
+  if ((count || 0) >= 2) {
+    return res.status(400).json({ error: 'Max 2 scorer picks per match' });
+  }
+
+  const { data, error } = await supabase
+    .from('scorer_predictions')
+    .insert({ league_id, match_id, telegram_id: userId, player_id })
+    .select().single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, prediction: data });
+});
+
+// POST /api/unpredict-scorer — remove a scorer pick (before kickoff)
+app.post('/api/unpredict-scorer', requireMiniAppAuth, async (req, res) => {
+  const { league_id, match_id, player_id } = req.body;
+  const userId = req.tgUser.id;
+
+  const { data: match } = await supabase.from('matches').select().eq('id', match_id).single();
+  if (!match) return res.status(404).json({ error: 'Match not found' });
+  if (new Date(match.kickoff) <= new Date()) {
+    return res.status(400).json({ error: 'Match has already started' });
+  }
+
+  const { error } = await supabase
+    .from('scorer_predictions').delete()
+    .eq('league_id', league_id).eq('match_id', match_id)
+    .eq('telegram_id', userId).eq('player_id', player_id);
 
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
@@ -436,6 +518,126 @@ app.post('/api/admin/score-match', requireMiniAppAuth, async (req, res) => {
   }
 
   res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════
+// AUTO-SCORING (API-Football, scheduled)
+// ════════════════════════════════════════════════════
+
+// Score one match end-to-end from the API: result + goalscorers.
+// Idempotent — safe to run repeatedly; only scores unscored predictions.
+async function autoScoreMatch(match) {
+  if (!match.external_id) return { skipped: 'no external_id' };
+
+  const result = await fetchFixtureResult(match.external_id);
+  if (!result || !result.finished) return { skipped: 'not finished' };
+
+  // 1. Save final score + mark finished (only if not already done)
+  if (match.status !== 'finished') {
+    await supabase.from('matches').update({
+      home_score: result.home_score,
+      away_score: result.away_score,
+      status: 'finished'
+    }).eq('id', match.id);
+  }
+
+  // 2. Store goalscorers (for scorer predictions) — skip own goals at source too
+  for (const g of result.goals) {
+    await supabase.from('match_goals').upsert({
+      match_id: match.id,
+      api_player_id: g.api_player_id,
+      player_name: g.name,
+      is_own_goal: g.own
+    }, { onConflict: 'match_id,api_player_id,player_name' });
+  }
+
+  // 3. Run BOTH scoring functions (exact-score predictions + scorer predictions)
+  await supabase.rpc('score_predictions', { p_match_id: match.id });
+  await supabase.rpc('score_scorer_predictions', { p_match_id: match.id });
+
+  // 4. Notify all members of every league that has this match in play
+  const { data: leagues } = await supabase
+    .from('predictions')
+    .select('league_id')
+    .eq('match_id', match.id);
+  const leagueIds = [...new Set((leagues || []).map(l => l.league_id))];
+
+  for (const leagueId of leagueIds) {
+    const { data: members } = await supabase
+      .from('league_members').select('telegram_id').eq('league_id', leagueId);
+    const msg = `⚽ *Match Result*\n${match.home_flag} ${match.home_team} ${result.home_score}–${result.away_score} ${match.away_team} ${match.away_flag}\n\n📊 Scores updated! Check the leaderboard.`;
+    // throttle to respect Telegram's ~30 msg/sec limit
+    for (const m of members || []) {
+      try {
+        await bot.sendMessage(m.telegram_id, msg, {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[
+            { text: '🏆 View Leaderboard', web_app: { url: `${MINI_APP_URL}?league=${leagueId}&tab=leaderboard` } }
+          ]]}
+        });
+      } catch (e) { /* blocked bot */ }
+      await new Promise(r => setTimeout(r, 40));
+    }
+  }
+
+  return { scored: true, score: `${result.home_score}-${result.away_score}`, goals: result.goals.length };
+}
+
+// Poll matches that have kicked off but aren't finished yet.
+// Runs every 10 minutes — cheap on the API quota (1-2 calls per in-play match).
+async function pollAndScore() {
+  const nowIso = new Date().toISOString();
+  const { data: due } = await supabase
+    .from('matches')
+    .select()
+    .lte('kickoff', nowIso)          // already kicked off
+    .neq('status', 'finished')        // not yet finalized
+    .not('external_id', 'is', null);  // linked to an API fixture
+
+  if (!due || due.length === 0) return;
+  console.log(`[cron] checking ${due.length} in-play match(es)`);
+  for (const m of due) {
+    try {
+      const r = await autoScoreMatch(m);
+      if (r.scored) console.log(`[cron] scored ${m.home_team} v ${m.away_team} ${r.score}`);
+    } catch (e) {
+      console.error(`[cron] ${m.home_team} v ${m.away_team}:`, e.message);
+    }
+  }
+}
+
+// Schedule: every 10 minutes. Telegram + API quota friendly.
+cron.schedule('*/10 * * * *', () => { pollAndScore().catch(console.error); });
+
+// ── Admin/setup endpoints (run from a browser once) ────────
+// Protected by a setup secret so randoms can't trigger them.
+function checkSetupKey(req, res) {
+  if (req.query.key !== process.env.SETUP_KEY) {
+    res.status(403).json({ error: 'bad setup key' });
+    return false;
+  }
+  return true;
+}
+
+// One-time: pull all 48 squads into the players table
+app.get('/setup/seed-squads', async (req, res) => {
+  if (!checkSetupKey(req, res)) return;
+  try { res.json({ ok: true, inserted: await seedSquads(supabase) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// One-time (or re-run after adding matches): link matches → API fixtures
+app.get('/setup/link-fixtures', async (req, res) => {
+  if (!checkSetupKey(req, res)) return;
+  try { res.json({ ok: true, linked: await linkFixtures(supabase) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Manual kick of the poller (handy for testing)
+app.get('/setup/poll-now', async (req, res) => {
+  if (!checkSetupKey(req, res)) return;
+  try { await pollAndScore(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Health check
