@@ -10,7 +10,13 @@ const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
 const cron = require('node-cron');
 const ws = require('ws');
-const { seedSquads, fetchFixtureResult, linkFixtures } = require('./api-football');
+const { fetchMatchResult, linkFixtures, findWorldCupLeagueId } = require('./highlightly');
+
+// Normalize a player name for matching (case/accent/space-insensitive)
+function normName(s) {
+  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim().replace(/\s+/g, ' ');
+}
 
 const app = express();
 app.use(express.json());
@@ -301,7 +307,7 @@ app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
   // Get this user's scorer predictions (grouped by match)
   const { data: myScorers } = await supabase
     .from('scorer_predictions')
-    .select('match_id, player_id, points_earned, players(name, position, points_value)')
+    .select('match_id, player_name, points_earned')
     .eq('league_id', id)
     .eq('telegram_id', userId);
 
@@ -385,20 +391,13 @@ app.post('/api/unpredict', requireMiniAppAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /api/players/:team — list players for a national team (for the picker)
-app.get('/api/players/:team', requireMiniAppAuth, async (req, res) => {
-  const { data } = await supabase
-    .from('players')
-    .select('id, name, position, points_value, photo')
-    .eq('team', req.params.team)
-    .order('position', { ascending: true });
-  res.json({ players: data || [] });
-});
-
-// POST /api/predict-scorer — pick a scorer (max 2 per user per match)
+// POST /api/predict-scorer — type a scorer name (max 2 per user per match)
 app.post('/api/predict-scorer', requireMiniAppAuth, async (req, res) => {
-  const { league_id, match_id, player_id } = req.body;
+  const { league_id, match_id, player_name } = req.body;
   const userId = req.tgUser.id;
+
+  const name = (player_name || '').trim();
+  if (name.length < 2) return res.status(400).json({ error: 'Enter a player name' });
 
   // match must not have started
   const { data: match } = await supabase.from('matches').select().eq('id', match_id).single();
@@ -424,16 +423,23 @@ app.post('/api/predict-scorer', requireMiniAppAuth, async (req, res) => {
 
   const { data, error } = await supabase
     .from('scorer_predictions')
-    .insert({ league_id, match_id, telegram_id: userId, player_id })
+    .insert({
+      league_id, match_id, telegram_id: userId,
+      player_name: name,
+      player_name_norm: normName(name)
+    })
     .select().single();
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    if (error.code === '23505') return res.status(400).json({ error: 'You already picked that player' });
+    return res.status(500).json({ error: error.message });
+  }
   res.json({ ok: true, prediction: data });
 });
 
 // POST /api/unpredict-scorer — remove a scorer pick (before kickoff)
 app.post('/api/unpredict-scorer', requireMiniAppAuth, async (req, res) => {
-  const { league_id, match_id, player_id } = req.body;
+  const { league_id, match_id, player_name } = req.body;
   const userId = req.tgUser.id;
 
   const { data: match } = await supabase.from('matches').select().eq('id', match_id).single();
@@ -445,7 +451,7 @@ app.post('/api/unpredict-scorer', requireMiniAppAuth, async (req, res) => {
   const { error } = await supabase
     .from('scorer_predictions').delete()
     .eq('league_id', league_id).eq('match_id', match_id)
-    .eq('telegram_id', userId).eq('player_id', player_id);
+    .eq('telegram_id', userId).eq('player_name_norm', normName(player_name));
 
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
@@ -536,7 +542,7 @@ app.post('/api/admin/score-match', requireMiniAppAuth, async (req, res) => {
 async function autoScoreMatch(match) {
   if (!match.external_id) return { skipped: 'no external_id' };
 
-  const result = await fetchFixtureResult(match.external_id);
+  const result = await fetchMatchResult(match.external_id);
   if (!result || !result.finished) return { skipped: 'not finished' };
 
   // 1. Save final score + mark finished (only if not already done)
@@ -548,17 +554,17 @@ async function autoScoreMatch(match) {
     }).eq('id', match.id);
   }
 
-  // 2. Store goalscorers (for scorer predictions) — skip own goals at source too
+  // 2. Store goalscorers by normalized name (own goals flagged)
   for (const g of result.goals) {
     await supabase.from('match_goals').upsert({
       match_id: match.id,
-      api_player_id: g.api_player_id,
       player_name: g.name,
+      player_name_norm: normName(g.name),
       is_own_goal: g.own
-    }, { onConflict: 'match_id,api_player_id,player_name' });
+    }, { onConflict: 'match_id,player_name_norm' });
   }
 
-  // 3. Run BOTH scoring functions (exact-score predictions + scorer predictions)
+  // 3. Run BOTH scoring functions (exact-score game + flat scorer game)
   await supabase.rpc('score_predictions', { p_match_id: match.id });
   await supabase.rpc('score_scorer_predictions', { p_match_id: match.id });
 
@@ -626,10 +632,10 @@ function checkSetupKey(req, res) {
   return true;
 }
 
-// One-time: pull all 48 squads into the players table
-app.get('/setup/seed-squads', async (req, res) => {
+// One-time check: find & print the World Cup league id in Highlightly
+app.get('/setup/find-league', async (req, res) => {
   if (!checkSetupKey(req, res)) return;
-  try { res.json({ ok: true, inserted: await seedSquads(supabase) }); }
+  try { res.json({ ok: true, leagueId: await findWorldCupLeagueId() }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
