@@ -307,7 +307,7 @@ app.get('/api/league/:id', requireMiniAppAuth, async (req, res) => {
   // Get this user's scorer predictions (grouped by match)
   const { data: myScorers } = await supabase
     .from('scorer_predictions')
-    .select('match_id, player_id, team, points_earned, players(name)')
+    .select('match_id, player_id, team, points_earned, players(name, position)')
     .eq('league_id', id)
     .eq('telegram_id', userId);
 
@@ -395,7 +395,7 @@ app.post('/api/unpredict', requireMiniAppAuth, async (req, res) => {
 app.get('/api/players/:team', requireMiniAppAuth, async (req, res) => {
   const { data } = await supabase
     .from('players')
-    .select('id, name')
+    .select('id, name, position')
     .eq('team', req.params.team)
     .order('name', { ascending: true });
   res.json({ players: data || [] });
